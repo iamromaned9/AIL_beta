@@ -67,13 +67,14 @@ init_log_db()
 
 st.set_page_config(layout="centered")
 st.title("Plataforma Predictiva Integral")
-st.caption("Versión final: login + carga externa + modelo + métricas + auditoría")
+st.caption("Versión final con autenticación obligatoria")
 
-if 'usuario' not in st.session_state:
+# VALIDACIÓN DE LOGIN FUERTE
+if 'usuario' not in st.session_state or st.session_state.usuario is None:
     st.session_state.usuario = None
     st.session_state.rol = None
+    st.markdown("### Inicia sesión para continuar")
 
-if not st.session_state.usuario:
     with st.form("login"):
         usuario = st.text_input("Usuario")
         password = st.text_input("Contraseña", type="password")
@@ -85,9 +86,12 @@ if not st.session_state.usuario:
                 st.session_state.usuario = usuario
                 st.session_state.rol = rol
                 st.success(f"Bienvenido, {usuario} ({rol})")
+                st.experimental_rerun()
             else:
                 st.error("Credenciales inválidas")
+    st.stop()
 
+# PANEL ADMIN
 if st.session_state.usuario and st.session_state.rol == "admin":
     st.sidebar.header("Registrar nuevo usuario")
     with st.sidebar.form("registro"):
@@ -103,8 +107,8 @@ if st.session_state.usuario and st.session_state.rol == "admin":
             except:
                 st.sidebar.error("Ese usuario ya existe")
 
-if st.session_state.usuario:
-    st.markdown("### Paso 1: Cargar datos desde archivo Excel o CSV")
+# FUNCIONALIDAD PRINCIPAL
+st.markdown("### Paso 1: Cargar datos desde archivo Excel o CSV")
 archivo = st.file_uploader("Selecciona un archivo (.csv o .xlsx)", type=["csv", "xlsx"])
 
 if archivo:
@@ -124,60 +128,59 @@ if archivo:
     except Exception as e:
         st.error(f"Error al cargar archivo: {str(e)}")
 
+if 'df_api' in st.session_state:
+    st.markdown("### Paso 2: Cargar modelo .pkl y ejecutar predicción")
+    modelo_file = st.file_uploader("Cargar modelo .pkl", type=["pkl"])
+    if modelo_file:
+        model = pickle.load(modelo_file)
+        df = st.session_state.df_api.copy()
+        cols_excluir = ["ID", "Y_real"]
+        X_modelo = df.drop(columns=[col for col in cols_excluir if col in df.columns])
+        y_pred = model.predict(X_modelo)
+        df["Prediccion"] = y_pred
 
-    if 'df_api' in st.session_state:
-        st.markdown("### Paso 2: Cargar modelo .pkl y ejecutar predicción")
-        modelo_file = st.file_uploader("Cargar modelo .pkl", type=["pkl"])
-        if modelo_file:
-            model = pickle.load(modelo_file)
-            df = st.session_state.df_api.copy()
-            cols_excluir = ["ID", "Y_real"]
-            X_modelo = df.drop(columns=[col for col in cols_excluir if col in df.columns])
-            y_pred = model.predict(X_modelo)
-            df["Prediccion"] = y_pred
+        tipo = "Clasificación" if hasattr(model, "predict_proba") else "Regresión"
+        st.write("Tipo de modelo:", tipo)
+        st.dataframe(df)
 
-            tipo = "Clasificación" if hasattr(model, "predict_proba") else "Regresión"
-            st.write("Tipo de modelo:", tipo)
-            st.dataframe(df)
+        st.markdown("### Paso 3: Evaluación del modelo")
+        if "Y_real" in df.columns:
+            if tipo == "Regresión":
+                mae = mean_absolute_error(df["Y_real"], df["Prediccion"])
+                r2 = r2_score(df["Y_real"], df["Prediccion"])
+                st.metric("MAE", f"{mae:.2f}")
+                st.metric("R²", f"{r2:.2f}")
+                conclusion = "Excelente ajuste." if r2 > 0.85 else "Ajuste aceptable." if r2 > 0.65 else "Modelo mejorable."
+                fig, ax = plt.subplots()
+                ax.scatter(df["Y_real"], df["Prediccion"], alpha=0.6)
+                ax.plot([df["Y_real"].min(), df["Y_real"].max()],
+                        [df["Y_real"].min(), df["Y_real"].max()], 'r--')
+                ax.set_xlabel("Y Real")
+                ax.set_ylabel("Predicción")
+                st.pyplot(fig)
+                st.info(f"Conclusión: {conclusion}")
+                log_ejecucion(st.session_state.usuario, tipo, "MAE", mae, "R2", r2)
 
-            st.markdown("### Paso 3: Evaluación del modelo")
-            if "Y_real" in df.columns:
-                if tipo == "Regresión":
-                    mae = mean_absolute_error(df["Y_real"], df["Prediccion"])
-                    r2 = r2_score(df["Y_real"], df["Prediccion"])
-                    st.metric("MAE", f"{mae:.2f}")
-                    st.metric("R²", f"{r2:.2f}")
-                    conclusion = "Excelente ajuste." if r2 > 0.85 else "Ajuste aceptable." if r2 > 0.65 else "Modelo mejorable."
-                    fig, ax = plt.subplots()
-                    ax.scatter(df["Y_real"], df["Prediccion"], alpha=0.6)
-                    ax.plot([df["Y_real"].min(), df["Y_real"].max()],
-                            [df["Y_real"].min(), df["Y_real"].max()], 'r--')
-                    ax.set_xlabel("Y Real")
-                    ax.set_ylabel("Predicción")
-                    st.pyplot(fig)
-                    st.info(f"Conclusión: {conclusion}")
-                    log_ejecucion(st.session_state.usuario, tipo, "MAE", mae, "R2", r2)
-
-                else:
-                    acc = accuracy_score(df["Y_real"], df["Prediccion"])
-                    X_auc = df.drop(columns=["Y_real", "Prediccion"]) if "Prediccion" in df.columns else df.drop(columns=["Y_real"])
-                    auc = roc_auc_score(df["Y_real"], model.predict_proba(X_auc)[:,1]) if hasattr(model, "predict_proba") else 0
-                    st.metric("Accuracy", f"{acc:.2f}")
-                    st.metric("AUC", f"{auc:.2f}")
-                    cm = confusion_matrix(df["Y_real"], df["Prediccion"])
-                    fig, ax = plt.subplots()
-                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-                    st.pyplot(fig)
-                    conclusion = "Clasificador sobresaliente." if auc > 0.9 else "Aceptable." if auc > 0.75 else "Modelo débil."
-                    st.info(f"Conclusión: {conclusion}")
-                    log_ejecucion(st.session_state.usuario, tipo, "Accuracy", acc, "AUC", auc)
             else:
-                st.warning("La columna 'Y_real' no existe. Solo se realizaron predicciones.")
+                acc = accuracy_score(df["Y_real"], df["Prediccion"])
+                X_auc = df.drop(columns=["Y_real", "Prediccion"]) if "Prediccion" in df.columns else df.drop(columns=["Y_real"])
+                auc = roc_auc_score(df["Y_real"], model.predict_proba(X_auc)[:,1]) if hasattr(model, "predict_proba") else 0
+                st.metric("Accuracy", f"{acc:.2f}")
+                st.metric("AUC", f"{auc:.2f}")
+                cm = confusion_matrix(df["Y_real"], df["Prediccion"])
+                fig, ax = plt.subplots()
+                sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+                st.pyplot(fig)
+                conclusion = "Clasificador sobresaliente." if auc > 0.9 else "Aceptable." if auc > 0.75 else "Modelo débil."
+                st.info(f"Conclusión: {conclusion}")
+                log_ejecucion(st.session_state.usuario, tipo, "Accuracy", acc, "AUC", auc)
+        else:
+            st.warning("La columna 'Y_real' no existe. Solo se realizaron predicciones.")
 
-            st.download_button("Descargar resultados", df.to_csv(index=False), file_name="predicciones.csv")
+        st.download_button("Descargar resultados", df.to_csv(index=False), file_name="predicciones.csv")
 
-    st.markdown("---")
-    st.subheader("Historial de ejecuciones")
-    conn = sqlite3.connect("resultados_modelos.db")
-    historico = pd.read_sql("SELECT * FROM ejecuciones ORDER BY fecha DESC", conn)
-    st.dataframe(historico)
+st.markdown("---")
+st.subheader("Historial de ejecuciones")
+conn = sqlite3.connect("resultados_modelos.db")
+historico = pd.read_sql("SELECT * FROM ejecuciones ORDER BY fecha DESC", conn)
+st.dataframe(historico)
