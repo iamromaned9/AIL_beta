@@ -86,7 +86,7 @@ if 'usuario' not in st.session_state or st.session_state.usuario is None:
                 st.session_state.usuario = usuario
                 st.session_state.rol = rol
                 st.success(f"Bienvenido, {usuario} ({rol})")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Credenciales inválidas")
     st.stop()
